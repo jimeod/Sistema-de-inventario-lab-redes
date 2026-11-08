@@ -8,6 +8,7 @@ const db = require('../config/aws');
 
 const usuariosService = require('./usuarios.service');
 const articulosService = require('./articulos.service');
+const movimientosService = require('./movimientos.service');
 
 const TABLE = process.env.DYNAMODB_TABLE_SOLICITUDES;
 
@@ -124,6 +125,7 @@ async function crearSolicitud(datos) {
         nombreSolicitante: usuario.nombre,
         fechaSolicitud: new Date().toISOString(),
         estado: 'PENDIENTE',
+        practica: datos.practica,
         articulos: articulosSolicitud,
         observaciones: datos.observaciones || ''
     };
@@ -133,6 +135,18 @@ async function crearSolicitud(datos) {
         Item: solicitud,
         ConditionExpression: 'attribute_not_exists(idSolicitudes)'
     }));
+
+    
+    for (const a of articulosSolicitud) {
+        await movimientosService.registrarMovimiento({
+            idArticulo: a.idArticulo,
+            idSolicitud: solicitud.idSolicitudes,
+            idSolicitante: usuario.idUsuario,
+            tipoMovimiento: 'SOLICITUD',
+            cantidad: a.cantidad,
+            motivo: solicitud.practica
+        });
+    }
 
     return solicitud;
 }

@@ -1,137 +1,38 @@
 const usuariosService = require('../services/usuarios.service');
+const { asyncHandler, ErrorNegocio } = require('../utils/errors');
 
 
-async function listar(req, res) {
-    try {
-        const usuarios = await usuariosService.obtenerUsuarios();
 
-        return res.status(200).json(usuarios);
+const listar = asyncHandler(async (req, res) => {
+    const usuarios = await usuariosService.obtenerUsuarios();
+    res.status(200).json(usuarios);
+});
 
-    } catch (error) {
-        console.error('Error al listar usuarios:', error);
+const consultar = asyncHandler(async (req, res) => {
+    const usuario = await usuariosService.obtenerUsuarioPorId(req.params.id);
+    if (!usuario) throw new ErrorNegocio('Usuario no encontrado', 404);
+    res.status(200).json(usuario);
+});
 
-        return res.status(500).json({
-            mensaje: 'Error al consultar usuarios'
-        });
+const registrar = asyncHandler(async (req, res) => {
+    const { nombre, correo, rol, password } = req.body;
+
+    if (!nombre || !correo || !rol || !password) {
+        throw new ErrorNegocio('Nombre, correo, rol y contraseña son obligatorios');
     }
-}
 
+    const usuario = await usuariosService.crearUsuario({ nombre, correo, rol, password });
+    res.status(201).json({ mensaje: 'Usuario registrado correctamente', usuario });
+});
 
-async function consultar(req, res) {
-    try {
-        const { id } = req.params;
+const editar = asyncHandler(async (req, res) => {
+    const usuario = await usuariosService.actualizarUsuario(req.params.id, req.body);
+    res.status(200).json({ mensaje: 'Usuario actualizado correctamente', usuario });
+});
 
-        const usuario = await usuariosService.obtenerUsuarioPorId(id);
+const desactivar = asyncHandler(async (req, res) => {
+    const usuario = await usuariosService.desactivarUsuario(req.params.id);
+    res.status(200).json({ mensaje: 'Usuario desactivado correctamente', usuario });
+});
 
-        if (!usuario) {
-            return res.status(404).json({
-                mensaje: 'Usuario no encontrado'
-            });
-        }
-
-        return res.status(200).json(usuario);
-
-    } catch (error) {
-        console.error('Error al consultar usuario:', error);
-
-        return res.status(500).json({
-            mensaje: 'Error al consultar usuario'
-        });
-    }
-}
-
-
-async function registrar(req, res) {
-    try {
-        const { nombre, correo, rol } = req.body;
-
-        if (!nombre || !correo || !rol) {
-            return res.status(400).json({
-                mensaje: 'Nombre, correo y rol son obligatorios'
-            });
-        }
-
-        const usuario = await usuariosService.crearUsuario({
-            nombre,
-            correo,
-            rol
-        });
-
-        return res.status(201).json({
-            mensaje: 'Usuario registrado correctamente',
-            usuario
-        });
-
-    } catch (error) {
-        console.error('Error al registrar usuario:', error);
-
-        return res.status(500).json({
-            mensaje: 'Error al registrar usuario'
-        });
-    }
-}
-
-
-async function editar(req, res) {
-    try {
-        const { id } = req.params;
-
-        const usuario = await usuariosService.actualizarUsuario(
-            id,
-            req.body
-        );
-
-        return res.status(200).json({
-            mensaje: 'Usuario actualizado correctamente',
-            usuario
-        });
-
-    } catch (error) {
-        console.error('Error al actualizar usuario:', error);
-
-        if (error.name === 'ConditionalCheckFailedException') {
-            return res.status(404).json({
-                mensaje: 'Usuario no encontrado'
-            });
-        }
-
-        return res.status(500).json({
-            mensaje: 'Error al actualizar usuario'
-        });
-    }
-}
-
-
-async function desactivar(req, res) {
-    try {
-        const { id } = req.params;
-
-        const usuario = await usuariosService.desactivarUsuario(id);
-
-        return res.status(200).json({
-            mensaje: 'Usuario desactivado correctamente',
-            usuario
-        });
-
-    } catch (error) {
-        console.error('Error al desactivar usuario:', error);
-
-        if (error.name === 'ConditionalCheckFailedException') {
-            return res.status(404).json({
-                mensaje: 'Usuario no encontrado'
-            });
-        }
-
-        return res.status(500).json({
-            mensaje: 'Error al desactivar usuario'
-        });
-    }
-}
-
-module.exports = {
-    listar,
-    consultar,
-    registrar,
-    editar,
-    desactivar
-};
+module.exports = { listar, consultar, registrar, editar, desactivar };

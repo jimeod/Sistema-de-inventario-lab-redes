@@ -13,6 +13,16 @@ async function consultar(req, res) {
             });
         }
 
+        // El solicitante solo puede ver las suyas
+        if (
+            req.usuario.rol !== 'ENCARGADO' &&
+            solicitud.idSolicitante !== req.usuario.idUsuario
+        ) {
+            return res.status(403).json({
+                mensaje: 'No tienes permisos para ver esta solicitud'
+            });
+        }
+
         return res.status(200).json(solicitud);
 
     } catch (error) {
@@ -23,7 +33,6 @@ async function consultar(req, res) {
         });
     }
 }
-
 
 
 async function listarPorUsuario(req, res) {
@@ -44,7 +53,6 @@ async function listarPorUsuario(req, res) {
         });
     }
 }
-
 
 
 async function listarPorEstado(req, res) {
@@ -81,21 +89,27 @@ async function listarPorEstado(req, res) {
 }
 
 
-
 async function registrar(req, res) {
     try {
-        const { idSolicitante, articulos, observaciones } = req.body;
+        const { articulos, observaciones, practica } = req.body;
 
-        if (!idSolicitante || !articulos) {
+        if (!practica || !articulos) {
             return res.status(400).json({
-                mensaje: 'El solicitante y los artículos son obligatorios'
+                mensaje: 'La práctica y los artículos son obligatorios'
             });
         }
+
+        // El solicitante sale del token; solo el encargado puede registrar a nombre de otro
+        const idSolicitante =
+            req.usuario.rol === 'ENCARGADO' && req.body.idSolicitante
+                ? req.body.idSolicitante
+                : req.usuario.idUsuario;
 
         const solicitud = await solicitudesService.crearSolicitud({
             idSolicitante,
             articulos,
-            observaciones
+            observaciones,
+            practica
         });
 
         return res.status(201).json({
