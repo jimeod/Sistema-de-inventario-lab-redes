@@ -1,8 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 
-const app = express();
+const articulosRoutes = require('./routes/articulos.routes');
 
+const app = express();
 
 app.use(cors());
 app.use(express.json());
@@ -13,5 +14,7 @@ app.get('/api/health', (req, res) => {
         message: 'API del inventario funcionando correctamente'
     });
 });
+
+app.use('/api/articulos', articulosRoutes);
 
 module.exports = app;
