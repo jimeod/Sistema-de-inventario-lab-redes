@@ -96,6 +96,21 @@ async function actualizarArticulo(idArticulo, datos) {
     return resultado.Attributes;
 }
 
+async function actualizarFotoArticulo(idArticulo, fotoKey) {
+    const resultado = await db.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { idArticulo },
+        UpdateExpression: 'SET fotoKey = :fotoKey',
+        ExpressionAttributeValues: {
+            ':fotoKey': fotoKey
+        },
+        ConditionExpression: 'attribute_exists(idArticulo)',
+        ReturnValues: 'ALL_NEW'
+    }));
+
+    return resultado.Attributes;
+}
+
 async function desactivarArticulo(idArticulo) {
     const resultado = await db.send(new UpdateCommand({
         TableName: TABLE,
@@ -116,5 +131,6 @@ module.exports = {
     obtenerArticuloPorId,
     crearArticulo,
     actualizarArticulo,
+    actualizarFotoArticulo,
     desactivarArticulo
 };

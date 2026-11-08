@@ -1,5 +1,12 @@
 const articulosService = require('../services/articulos.service');
 
+const {
+    subirArchivo,
+    obtenerUrlArchivo
+} = require('../services/s3.service');
+
+
+
 async function listar(req, res) {
     try {
         const articulos = await articulosService.obtenerArticulos();
@@ -12,18 +19,29 @@ async function listar(req, res) {
 
 async function consultar(req, res) {
     try {
-        const articulo = await articulosService.obtenerArticuloPorId(
-            req.params.id
-        );
+        const { id } = req.params;
+
+        const articulo = await articulosService.obtenerArticuloPorId(id);
 
         if (!articulo) {
-            return res.status(404).json({ mensaje: 'Artículo no encontrado' });
+            return res.status(404).json({
+                mensaje: 'Artículo no encontrado'
+            });
         }
 
-        res.json(articulo);
+        
+        if (articulo.fotoKey) {
+            articulo.fotoUrl = await obtenerUrlArchivo(articulo.fotoKey);
+        }
+
+        return res.status(200).json(articulo);
+
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ mensaje: 'Error al consultar el artículo' });
+        console.error('Error al consultar artículo:', error);
+
+        return res.status(500).json({
+            mensaje: 'Error al consultar artículo'
+        });
     }
 }
 
@@ -90,4 +108,54 @@ async function desactivar(req, res) {
     }
 }
 
-module.exports = { listar, consultar, registrar, editar, desactivar };
+
+async function subirFoto(req, res) {
+    try {
+        const { id } = req.params;
+
+        if (!req.file) {
+            return res.status(400).json({
+                mensaje: 'Debes seleccionar una imagen'
+            });
+        }
+
+        const articulo = await articulosService.obtenerArticuloPorId(id);
+        if (!articulo) {
+            return res.status(404).json({
+                mensaje: 'Artículo no encontrado'
+            });
+        }
+
+        const fotoKey = await subirArchivo(
+            req.file,
+            'articulos'
+        );
+
+        const articuloActualizado =
+            await articulosService.actualizarFotoArticulo(id, fotoKey);
+
+        const fotoUrl = await obtenerUrlArchivo(fotoKey);
+
+        return res.status(200).json({
+            mensaje: 'Fotografía subida correctamente',
+            articulo: articuloActualizado,
+            fotoUrl
+        });
+
+    } catch (error) {
+        console.error('Error al subir fotografía:', error);
+
+        return res.status(500).json({
+            mensaje: 'Error al subir la fotografía'
+        });
+    }
+}
+
+module.exports = {
+    listar,
+    consultar,
+    registrar,
+    editar,
+    desactivar,
+    subirFoto
+};
