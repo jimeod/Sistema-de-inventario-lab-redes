@@ -14,7 +14,10 @@ router.get('/:id', controller.consultar);
 router.get('/estado/:estado', permitirRoles('ENCARGADO'), controller.listarPorEstado);
 router.patch('/:id/aprobar', permitirRoles('ENCARGADO'), flujo.aprobar);
 router.patch('/:id/rechazar', permitirRoles('ENCARGADO'), flujo.rechazar);
+
+router.patch('/:id/cancelar', flujo.cancelar);
 router.patch('/:id/entregar', permitirRoles('ENCARGADO'), flujo.entregar);
 router.patch('/:id/devolver', permitirRoles('ENCARGADO'), flujo.devolver);
+router.patch('/:id/cerrar', permitirRoles('ENCARGADO'), flujo.cerrar);
 
 module.exports = router;

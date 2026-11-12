@@ -1,8 +1,6 @@
 const usuariosService = require('../services/usuarios.service');
 const { asyncHandler, ErrorNegocio } = require('../utils/errors');
 
-
-
 const listar = asyncHandler(async (req, res) => {
     const usuarios = await usuariosService.obtenerUsuarios();
     res.status(200).json(usuarios);
@@ -26,13 +24,24 @@ const registrar = asyncHandler(async (req, res) => {
 });
 
 const editar = asyncHandler(async (req, res) => {
-    const usuario = await usuariosService.actualizarUsuario(req.params.id, req.body);
+    const usuario = await usuariosService.actualizarUsuario(req.params.id, req.body, req.usuario);
     res.status(200).json({ mensaje: 'Usuario actualizado correctamente', usuario });
 });
 
 const desactivar = asyncHandler(async (req, res) => {
-    const usuario = await usuariosService.desactivarUsuario(req.params.id);
+    const usuario = await usuariosService.desactivarUsuario(req.params.id, req.usuario);
     res.status(200).json({ mensaje: 'Usuario desactivado correctamente', usuario });
 });
 
-module.exports = { listar, consultar, registrar, editar, desactivar };
+const restablecerPassword = asyncHandler(async (req, res) => {
+    const { passwordNueva } = req.body;
+    const { usuario, passwordTemporal } =
+        await usuariosService.restablecerPassword(req.params.id, passwordNueva);
+    res.status(200).json({
+        mensaje: 'Contraseña restablecida correctamente',
+        usuario,
+        ...(passwordTemporal ? { passwordTemporal } : {})
+    });
+});
+
+module.exports = { listar, consultar, registrar, editar, desactivar, restablecerPassword };

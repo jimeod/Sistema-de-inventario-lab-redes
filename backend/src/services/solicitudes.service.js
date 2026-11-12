@@ -1,32 +1,51 @@
 const {
     GetCommand,
-    PutCommand,
-    QueryCommand
+    TransactWriteCommand
 } = require('@aws-sdk/lib-dynamodb');
+const crypto = require('crypto');
 
 const db = require('../config/aws');
+const { ErrorNegocio } = require('../utils/errors');
+const { consultarTodo, motivosCancelacion } = require('../utils/dynamo');
+const { exigirTexto } = require('../utils/validaciones');
 
 const usuariosService = require('./usuarios.service');
 const articulosService = require('./articulos.service');
 const movimientosService = require('./movimientos.service');
 
 const TABLE = process.env.DYNAMODB_TABLE_SOLICITUDES;
+const T_CONTADORES = process.env.DYNAMODB_TABLE_CONTADORES || 'Contadores';
+
+const CONTADOR_FOLIOS = 'folio-solicitudes';
+const REINTENTOS_FOLIO = 5;
+
+const MAX_ARTICULOS_DISTINTOS = 20;
+const ESTADOS = [
+    'PENDIENTE', 'APROBADA', 'ENTREGADA', 'DEVUELTA', 'RECHAZADA', 'CANCELADA', 'CERRADA'
+];
 
 
+function normalizarSolicitud(item) {
+    if (!item) return null;
+    return { ...item, folio: item.folio || item.idSolicitudes };
+}
+
+function formatearFolio(numero) {
+    return `SOL-${String(numero).padStart(4, '0')}`;
+}
 
 async function obtenerSolicitudPorId(idSolicitudes) {
+    if (typeof idSolicitudes !== 'string' || !idSolicitudes) return null;
     const resultado = await db.send(new GetCommand({
         TableName: TABLE,
         Key: { idSolicitudes }
     }));
 
-    return resultado.Item || null;
+    return normalizarSolicitud(resultado.Item);
 }
 
-
-
 async function obtenerSolicitudesPorUsuario(idSolicitante) {
-    const resultado = await db.send(new QueryCommand({
+    const items = await consultarTodo({
         TableName: TABLE,
         IndexName: 'SolicitudesPorUsuario',
         KeyConditionExpression: 'idSolicitante = :idSolicitante',
@@ -34,15 +53,12 @@ async function obtenerSolicitudesPorUsuario(idSolicitante) {
             ':idSolicitante': idSolicitante
         },
         ScanIndexForward: false
-    }));
-
-    return resultado.Items || [];
+    });
+    return items.map(normalizarSolicitud);
 }
 
-
-
 async function obtenerSolicitudesPorEstado(estado) {
-    const resultado = await db.send(new QueryCommand({
+    const items = await consultarTodo({
         TableName: TABLE,
         IndexName: 'SolicitudesPorEstado',
         KeyConditionExpression: '#estado = :estado',
@@ -53,106 +69,151 @@ async function obtenerSolicitudesPorEstado(estado) {
             ':estado': estado
         },
         ScanIndexForward: false
-    }));
+    });
+    return items.map(normalizarSolicitud);
+}
 
-    return resultado.Items || [];
+async function leerContadorFolios() {
+    const r = await db.send(new GetCommand({
+        TableName: T_CONTADORES,
+        Key: { nombre: CONTADOR_FOLIOS },
+        ConsistentRead: true
+    }));
+    return r.Item ? r.Item.valor : 0;
 }
 
 
+function itemContador(actual, siguiente) {
+    return {
+        Update: {
+            TableName: T_CONTADORES,
+            Key: { nombre: CONTADOR_FOLIOS },
+            UpdateExpression: 'SET valor = :siguiente',
+            ConditionExpression: actual === 0
+                ? 'attribute_not_exists(nombre)'
+                : 'valor = :actual',
+            ExpressionAttributeValues: actual === 0
+                ? { ':siguiente': siguiente }
+                : { ':siguiente': siguiente, ':actual': actual }
+        }
+    };
+}
 
 async function crearSolicitud(datos) {
-
-
-    const usuario = await usuariosService.obtenerUsuarioPorId(
-        datos.idSolicitante
-    );
-
+    const usuario = await usuariosService.obtenerUsuarioPorId(datos.idSolicitante);
     if (!usuario || !usuario.activo) {
-        throw new Error('El usuario no existe o está inactivo');
+        throw new ErrorNegocio('El usuario no existe o está inactivo', 404);
     }
 
-    
+    const practica = exigirTexto(datos.practica, 'práctica', { max: 200 });
+    const observaciones = datos.observaciones === undefined || datos.observaciones === ''
+        ? ''
+        : exigirTexto(datos.observaciones, 'observaciones', { max: 500 });
+
     if (!Array.isArray(datos.articulos) || datos.articulos.length === 0) {
-        throw new Error('La solicitud debe incluir al menos un artículo');
+        throw new ErrorNegocio('La solicitud debe incluir al menos un artículo');
     }
 
-    
-    const idsArticulos = datos.articulos.map(
-        articulo => articulo.idArticulo
-    );
+    for (const a of datos.articulos) {
+        if (!a || typeof a !== 'object' || typeof a.idArticulo !== 'string' || !a.idArticulo ||
+            !Number.isInteger(a.cantidad) || a.cantidad <= 0) {
+            throw new ErrorNegocio('Cada artículo debe tener un ID y una cantidad entera positiva');
+        }
+    }
 
+    const idsArticulos = datos.articulos.map(a => a.idArticulo);
     if (new Set(idsArticulos).size !== idsArticulos.length) {
-        throw new Error('No se permiten artículos duplicados en una solicitud');
+        throw new ErrorNegocio('No se permiten artículos duplicados en una solicitud');
+    }
+    if (idsArticulos.length > MAX_ARTICULOS_DISTINTOS) {
+        throw new ErrorNegocio(
+            `Una solicitud admite máximo ${MAX_ARTICULOS_DISTINTOS} artículos distintos`
+        );
     }
 
     const articulosSolicitud = [];
-
-    
-    for (const articuloSolicitado of datos.articulos) {
-
-        const { idArticulo, cantidad } = articuloSolicitado;
-
-        if (!idArticulo || !Number.isInteger(cantidad) || cantidad <= 0) {
-            throw new Error('Cada artículo debe tener un ID y una cantidad entera positiva');
-        }
-
-        const articulo = await articulosService.obtenerArticuloPorId(
-            idArticulo
-        );
+    const articulosCompletos = [];
+    for (const { idArticulo, cantidad } of datos.articulos) {
+        const articulo = await articulosService.obtenerArticuloPorId(idArticulo);
 
         if (!articulo || !articulo.activo) {
-            throw new Error(`El artículo ${idArticulo} no existe o está inactivo`);
+            throw new ErrorNegocio(`El artículo ${idArticulo} no existe o está inactivo`, 404);
         }
-
-        if (cantidad > articulo.disponibles) {
-            throw new Error(
-                `Existencias insuficientes para ${articulo.nombre}. Disponibles: ${articulo.disponibles}`
+        if (cantidad > articulo.libres) {
+            throw new ErrorNegocio(
+                `Existencias insuficientes para ${articulo.nombre}. Libres: ${articulo.libres}`
             );
         }
 
         articulosSolicitud.push({
             idArticulo: articulo.idArticulo,
+            clave: articulo.clave,
             nombre: articulo.nombre,
             tipo: articulo.tipo,
             cantidad
         });
+        articulosCompletos.push(articulo);
     }
 
-    
-    const solicitud = {
-        idSolicitudes: `SOL-${require('crypto').randomUUID()}`,
-        idSolicitante: usuario.idUsuario,
-        nombreSolicitante: usuario.nombre,
-        fechaSolicitud: new Date().toISOString(),
-        estado: 'PENDIENTE',
-        practica: datos.practica,
-        articulos: articulosSolicitud,
-        observaciones: datos.observaciones || ''
-    };
+    const idSolicitudes = `SOL-${crypto.randomUUID()}`;
+    const fechaSolicitud = new Date().toISOString();
 
-    await db.send(new PutCommand({
-        TableName: TABLE,
-        Item: solicitud,
-        ConditionExpression: 'attribute_not_exists(idSolicitudes)'
-    }));
+    for (let intento = 1; intento <= REINTENTOS_FOLIO; intento++) {
+        const actual = await leerContadorFolios();
+        const folio = formatearFolio(actual + 1);
 
-    
-    for (const a of articulosSolicitud) {
-        await movimientosService.registrarMovimiento({
-            idArticulo: a.idArticulo,
-            idSolicitud: solicitud.idSolicitudes,
+        const solicitud = {
+            idSolicitudes,
+            folio,
             idSolicitante: usuario.idUsuario,
-            tipoMovimiento: 'SOLICITUD',
-            cantidad: a.cantidad,
-            motivo: solicitud.practica
-        });
-    }
+            nombreSolicitante: usuario.nombre,
+            fechaSolicitud,
+            estado: 'PENDIENTE',
+            practica,
+            articulos: articulosSolicitud,
+            observaciones
+        };
 
-    return solicitud;
+        
+        const items = [
+            itemContador(actual, actual + 1),
+            {
+                Put: {
+                    TableName: TABLE,
+                    Item: solicitud,
+                    ConditionExpression: 'attribute_not_exists(idSolicitudes)'
+                }
+            }
+        ];
+        articulosCompletos.forEach((articulo, k) => {
+            items.push(movimientosService.itemTransaccion(movimientosService.construirMovimiento({
+                articulo,
+                solicitud,
+                solicitante: usuario,
+                tipoMovimiento: 'SOLICITUD',
+                cantidad: articulosSolicitud[k].cantidad,
+                motivo: practica,
+                antes: articulo,
+                despues: articulo
+            })));
+        });
+
+        try {
+            await db.send(new TransactWriteCommand({ TransactItems: items }));
+            return solicitud;
+        } catch (err) {
+            const folioOcupado = err.name === 'TransactionCanceledException' &&
+                motivosCancelacion(err)[0] === 'ConditionalCheckFailed';
+            if (!folioOcupado || intento === REINTENTOS_FOLIO) throw err;
+            
+        }
+    }
 }
 
-
 module.exports = {
+    MAX_ARTICULOS_DISTINTOS,
+    formatearFolio,
+    ESTADOS,
     obtenerSolicitudPorId,
     obtenerSolicitudesPorUsuario,
     obtenerSolicitudesPorEstado,

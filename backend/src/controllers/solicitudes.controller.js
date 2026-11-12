@@ -1,156 +1,49 @@
 const solicitudesService = require('../services/solicitudes.service');
+const { asyncHandler, ErrorNegocio } = require('../utils/errors');
 
+const consultar = asyncHandler(async (req, res) => {
+    const solicitud = await solicitudesService.obtenerSolicitudPorId(req.params.id);
+    if (!solicitud) throw new ErrorNegocio('Solicitud no encontrada', 404);
 
-async function consultar(req, res) {
-    try {
-        const { id } = req.params;
-
-        const solicitud = await solicitudesService.obtenerSolicitudPorId(id);
-
-        if (!solicitud) {
-            return res.status(404).json({
-                mensaje: 'Solicitud no encontrada'
-            });
-        }
-
-        // El solicitante solo puede ver las suyas
-        if (
-            req.usuario.rol !== 'ENCARGADO' &&
-            solicitud.idSolicitante !== req.usuario.idUsuario
-        ) {
-            return res.status(403).json({
-                mensaje: 'No tienes permisos para ver esta solicitud'
-            });
-        }
-
-        return res.status(200).json(solicitud);
-
-    } catch (error) {
-        console.error('Error al consultar solicitud:', error);
-
-        return res.status(500).json({
-            mensaje: 'Error al consultar solicitud'
-        });
+    
+    if (req.usuario.rol !== 'ENCARGADO' && solicitud.idSolicitante !== req.usuario.idUsuario) {
+        throw new ErrorNegocio('No tienes permisos para ver esta solicitud', 403);
     }
-}
+    res.status(200).json(solicitud);
+});
 
+const listarPorUsuario = asyncHandler(async (req, res) => {
+    const solicitudes = await solicitudesService.obtenerSolicitudesPorUsuario(req.params.idUsuario);
+    res.status(200).json(solicitudes);
+});
 
-async function listarPorUsuario(req, res) {
-    try {
-        const { idUsuario } = req.params;
-
-        const solicitudes = await solicitudesService.obtenerSolicitudesPorUsuario(
-            idUsuario
-        );
-
-        return res.status(200).json(solicitudes);
-
-    } catch (error) {
-        console.error('Error al consultar solicitudes del usuario:', error);
-
-        return res.status(500).json({
-            mensaje: 'Error al consultar solicitudes del usuario'
-        });
+const listarPorEstado = asyncHandler(async (req, res) => {
+    const { estado } = req.params;
+    if (!solicitudesService.ESTADOS.includes(estado)) {
+        throw new ErrorNegocio('Estado de solicitud no válido');
     }
-}
+    const solicitudes = await solicitudesService.obtenerSolicitudesPorEstado(estado);
+    res.status(200).json(solicitudes);
+});
 
+const registrar = asyncHandler(async (req, res) => {
+    const { articulos, observaciones, practica } = req.body;
 
-async function listarPorEstado(req, res) {
-    try {
-        const { estado } = req.params;
-
-        const estadosPermitidos = [
-            'PENDIENTE',
-            'APROBADA',
-            'RECHAZADA',
-            'ENTREGADA',
-            'DEVUELTA'
-        ];
-
-        if (!estadosPermitidos.includes(estado)) {
-            return res.status(400).json({
-                mensaje: 'Estado de solicitud no válido'
-            });
-        }
-
-        const solicitudes = await solicitudesService.obtenerSolicitudesPorEstado(
-            estado
-        );
-
-        return res.status(200).json(solicitudes);
-
-    } catch (error) {
-        console.error('Error al consultar solicitudes por estado:', error);
-
-        return res.status(500).json({
-            mensaje: 'Error al consultar solicitudes por estado'
-        });
+    if (!practica || !articulos) {
+        throw new ErrorNegocio('La práctica y los artículos son obligatorios');
     }
-}
 
+    
+    const idSolicitante =
+        req.usuario.rol === 'ENCARGADO' && req.body.idSolicitante
+            ? req.body.idSolicitante
+            : req.usuario.idUsuario;
 
-async function registrar(req, res) {
-    try {
-        const { articulos, observaciones, practica } = req.body;
+    const solicitud = await solicitudesService.crearSolicitud({
+        idSolicitante, articulos, observaciones, practica
+    });
 
-        if (!practica || !articulos) {
-            return res.status(400).json({
-                mensaje: 'La práctica y los artículos son obligatorios'
-            });
-        }
+    res.status(201).json({ mensaje: 'Solicitud registrada correctamente', solicitud });
+});
 
-        // El solicitante sale del token; solo el encargado puede registrar a nombre de otro
-        const idSolicitante =
-            req.usuario.rol === 'ENCARGADO' && req.body.idSolicitante
-                ? req.body.idSolicitante
-                : req.usuario.idUsuario;
-
-        const solicitud = await solicitudesService.crearSolicitud({
-            idSolicitante,
-            articulos,
-            observaciones,
-            practica
-        });
-
-        return res.status(201).json({
-            mensaje: 'Solicitud registrada correctamente',
-            solicitud
-        });
-
-    } catch (error) {
-        console.error('Error al registrar solicitud:', error);
-
-        if (
-            error.message.includes('no existe') ||
-            error.message.includes('inactivo')
-        ) {
-            return res.status(404).json({
-                mensaje: error.message
-            });
-        }
-
-        if (
-            error.message.includes('insuficientes') ||
-            error.message.includes('obligatorios') ||
-            error.message.includes('duplicados') ||
-            error.message.includes('positiva') ||
-            error.message.includes('al menos')
-        ) {
-            return res.status(400).json({
-                mensaje: error.message
-            });
-        }
-
-        return res.status(500).json({
-            mensaje: 'Error al registrar solicitud'
-        });
-    }
-}
-
-
-module.exports = {
-    consultar,
-    listarPorUsuario,
-    listarPorEstado,
-    registrar
-};
+module.exports = { consultar, listarPorUsuario, listarPorEstado, registrar };

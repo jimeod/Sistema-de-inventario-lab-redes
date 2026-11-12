@@ -4,10 +4,11 @@ const db = require('../config/aws');
 const solicitudesService = require('./solicitudes.service');
 const articulosService = require('./articulos.service');
 const movimientos = require('./movimientos.service');
+const inventario = require('../utils/inventario');
 const { ErrorNegocio } = require('../utils/errors');
+const { exigirTexto } = require('../utils/validaciones');
 
 const T_SOLICITUDES = process.env.DYNAMODB_TABLE_SOLICITUDES;
-const T_ARTICULOS = process.env.DYNAMODB_TABLE_ARTICULOS;
 
 
 
@@ -17,10 +18,10 @@ async function cargarSolicitud(id) {
     return s;
 }
 
-function exigirEstado(solicitud, esperado) {
-    if (solicitud.estado !== esperado) {
+function exigirEstado(solicitud, ...esperados) {
+    if (!esperados.includes(solicitud.estado)) {
         throw new ErrorNegocio(
-            `La solicitud está ${solicitud.estado}; para esta operación debe estar ${esperado}`,
+            `La solicitud está ${solicitud.estado}; para esta operación debe estar ${esperados.join(' o ')}`,
             409
         );
     }
@@ -30,8 +31,8 @@ function exigirEstado(solicitud, esperado) {
 async function cargarArticulos(solicitud) {
     const mapa = {};
     for (const item of solicitud.articulos) {
-        const art = await articulosService.obtenerArticuloPorId(item.idArticulo);
-        if (!art) throw new ErrorNegocio(`El artículo ${item.idArticulo} ya no existe`, 404);
+        const art = await articulosService.migrarSiHaceFalta(item.idArticulo);
+        if (!art) throw new ErrorNegocio(`El artículo ${item.nombre} ya no existe`, 404);
         mapa[item.idArticulo] = art;
     }
     return mapa;
@@ -41,84 +42,152 @@ async function ejecutar(items) {
     await db.send(new TransactWriteCommand({ TransactItems: items }));
 }
 
-// ---------- aprobar / rechazar ----------
+function textoOpcional(valor, campo, max = 500) {
+    if (valor === undefined || valor === null || valor === '') return '';
+    return exigirTexto(valor, campo, { max });
+}
 
-async function aprobar(idSolicitud, encargado, motivo) {
-    const s = await cargarSolicitud(idSolicitud);
-    exigirEstado(s, 'PENDIENTE');
 
-    const arts = await cargarArticulos(s);
-    for (const item of s.articulos) {
-        const a = arts[item.idArticulo];
-        if (!a.activo) throw new ErrorNegocio(`El artículo ${a.nombre} está inactivo`);
-        if (item.cantidad > a.disponibles) {
-            throw new ErrorNegocio(
-                `Existencias insuficientes para ${a.nombre}. Disponibles: ${a.disponibles}`
-            );
-        }
-    }
-
-    const items = [{
+function itemSolicitud(solicitud, nuevoEstado, campos) {
+    const nombres = { '#estado': 'estado' };
+    const valores = { ':nuevo': nuevoEstado, ':actual': solicitud.estado };
+    const sets = ['#estado = :nuevo'];
+    Object.entries(campos).forEach(([campo, valor], i) => {
+        nombres[`#c${i}`] = campo;
+        valores[`:v${i}`] = valor;
+        sets.push(`#c${i} = :v${i}`);
+    });
+    return {
         Update: {
             TableName: T_SOLICITUDES,
-            Key: { idSolicitudes: idSolicitud },
-            UpdateExpression: 'SET #estado = :nuevo, idEncargado = :enc, nombreEncargado = :nom, fechaResolucion = :f, motivoResolucion = :m',
+            Key: { idSolicitudes: solicitud.idSolicitudes },
+            UpdateExpression: `SET ${sets.join(', ')}`,
             ConditionExpression: '#estado = :actual',
-            ExpressionAttributeNames: { '#estado': 'estado' },
-            ExpressionAttributeValues: {
-                ':nuevo': 'APROBADA', ':actual': 'PENDIENTE',
-                ':enc': encargado.idUsuario, ':nom': encargado.nombre,
-                ':f': new Date().toISOString(), ':m': motivo || ''
-            }
+            ExpressionAttributeNames: nombres,
+            ExpressionAttributeValues: valores
         }
-    }];
+    };
+}
 
-    for (const item of s.articulos) {
+
+function itemsPorArticulo({
+    solicitud, arts, encargado, tipoMovimiento, motivo, exigirActivo, calcular, solo
+}) {
+    const items = [];
+    for (const item of solicitud.articulos) {
+        if (solo && !solo(item)) continue;
         const a = arts[item.idArticulo];
+        const antes = inventario.contadores(a);
+        const { despues, detalle } = calcular(item, antes, a);
+
+        if (despues !== antes) {
+            items.push(articulosService.itemActualizarContadores(
+                { ...antes, idArticulo: a.idArticulo }, despues, { exigirActivo }
+            ));
+        }
         items.push(movimientos.itemTransaccion(movimientos.construirMovimiento({
-            idArticulo: a.idArticulo, idSolicitud, idSolicitante: s.idSolicitante,
-            idEncargado: encargado.idUsuario, tipoMovimiento: 'APROBACION',
-            cantidad: item.cantidad, motivo: motivo || '',
-            saldoAntes: a.disponibles, saldoDespues: a.disponibles
+            articulo: a,
+            solicitud,
+            solicitante: { idUsuario: solicitud.idSolicitante, nombre: solicitud.nombreSolicitante },
+            encargado,
+            tipoMovimiento,
+            cantidad: item.cantidad,
+            motivo,
+            antes,
+            despues,
+            detalle
         })));
     }
+    return items;
+}
+
+const datosEncargado = encargado => ({
+    idEncargado: encargado.idUsuario,
+    nombreEncargado: encargado.nombre
+});
+
+
+
+async function aprobar(idSolicitud, encargado, motivoCrudo) {
+    const motivo = textoOpcional(motivoCrudo, 'motivo');
+    const s = await cargarSolicitud(idSolicitud);
+    exigirEstado(s, 'PENDIENTE');
+    const arts = await cargarArticulos(s);
+
+    for (const item of s.articulos) {
+        if (!arts[item.idArticulo].activo) {
+            throw new ErrorNegocio(`El artículo ${arts[item.idArticulo].nombre} está inactivo`);
+        }
+    }
+
+    const items = [itemSolicitud(s, 'APROBADA', {
+        ...datosEncargado(encargado),
+        fechaResolucion: new Date().toISOString(),
+        motivoResolucion: motivo,
+        reservaAplicada: true
+    })];
+
+    items.push(...itemsPorArticulo({
+        solicitud: s, arts, encargado, tipoMovimiento: 'APROBACION', motivo,
+        exigirActivo: true,
+        calcular: (item, antes, a) => ({ despues: inventario.reservar(antes, item.cantidad, a.nombre) })
+    }));
 
     await ejecutar(items);
     return solicitudesService.obtenerSolicitudPorId(idSolicitud);
 }
 
-async function rechazar(idSolicitud, encargado, motivo) {
-    if (!motivo || !motivo.trim()) {
-        throw new ErrorNegocio('El motivo del rechazo es obligatorio');
-    }
+async function rechazar(idSolicitud, encargado, motivoCrudo) {
+    const motivo = exigirTexto(motivoCrudo, 'motivo del rechazo', { max: 500 });
     const s = await cargarSolicitud(idSolicitud);
     exigirEstado(s, 'PENDIENTE');
     const arts = await cargarArticulos(s);
 
-    const items = [{
-        Update: {
-            TableName: T_SOLICITUDES,
-            Key: { idSolicitudes: idSolicitud },
-            UpdateExpression: 'SET #estado = :nuevo, idEncargado = :enc, nombreEncargado = :nom, fechaResolucion = :f, motivoResolucion = :m',
-            ConditionExpression: '#estado = :actual',
-            ExpressionAttributeNames: { '#estado': 'estado' },
-            ExpressionAttributeValues: {
-                ':nuevo': 'RECHAZADA', ':actual': 'PENDIENTE',
-                ':enc': encargado.idUsuario, ':nom': encargado.nombre,
-                ':f': new Date().toISOString(), ':m': motivo.trim()
-            }
-        }
-    }];
+    const items = [itemSolicitud(s, 'RECHAZADA', {
+        ...datosEncargado(encargado),
+        fechaResolucion: new Date().toISOString(),
+        motivoResolucion: motivo
+    })];
 
-    for (const item of s.articulos) {
-        const a = arts[item.idArticulo];
-        items.push(movimientos.itemTransaccion(movimientos.construirMovimiento({
-            idArticulo: a.idArticulo, idSolicitud, idSolicitante: s.idSolicitante,
-            idEncargado: encargado.idUsuario, tipoMovimiento: 'RECHAZO',
-            cantidad: item.cantidad, motivo: motivo.trim(),
-            saldoAntes: a.disponibles, saldoDespues: a.disponibles
-        })));
+    
+    items.push(...itemsPorArticulo({
+        solicitud: s, arts, encargado, tipoMovimiento: 'RECHAZO', motivo,
+        calcular: (item, antes) => ({ despues: antes })
+    }));
+
+    await ejecutar(items);
+    return solicitudesService.obtenerSolicitudPorId(idSolicitud);
+}
+
+
+async function cancelar(idSolicitud, actor, motivoCrudo) {
+    const motivo = textoOpcional(motivoCrudo, 'motivo');
+    const s = await cargarSolicitud(idSolicitud);
+
+    if (actor.rol !== 'ENCARGADO' && s.idSolicitante !== actor.idUsuario) {
+        throw new ErrorNegocio('No tienes permisos para cancelar esta solicitud', 403);
     }
+    exigirEstado(s, 'PENDIENTE', 'APROBADA');
+
+    const arts = await cargarArticulos(s);
+    
+    const liberaReserva = s.estado === 'APROBADA' && s.reservaAplicada === true;
+
+    const items = [itemSolicitud(s, 'CANCELADA', {
+        fechaCancelacion: new Date().toISOString(),
+        idCancelo: actor.idUsuario,
+        nombreCancelo: actor.nombre,
+        motivoCancelacion: motivo
+    })];
+
+    items.push(...itemsPorArticulo({
+        solicitud: s, arts, encargado: actor.rol === 'ENCARGADO' ? actor : undefined,
+        tipoMovimiento: 'CANCELACION', motivo,
+        calcular: (item, antes, a) => ({
+            despues: liberaReserva ? inventario.liberar(antes, item.cantidad, a.nombre) : antes,
+            detalle: { estadoAnterior: s.estado, canceladaPor: actor.idUsuario }
+        })
+    }));
 
     await ejecutar(items);
     return solicitudesService.obtenerSolicitudPorId(idSolicitud);
@@ -131,101 +200,57 @@ async function entregar(idSolicitud, encargado) {
     exigirEstado(s, 'APROBADA');
     const arts = await cargarArticulos(s);
 
-    const items = [{
-        Update: {
-            TableName: T_SOLICITUDES,
-            Key: { idSolicitudes: idSolicitud },
-            UpdateExpression: 'SET #estado = :nuevo, fechaEntrega = :f, idEncargadoEntrega = :enc',
-            ConditionExpression: '#estado = :actual',
-            ExpressionAttributeNames: { '#estado': 'estado' },
-            ExpressionAttributeValues: {
-                ':nuevo': 'ENTREGADA', ':actual': 'APROBADA',
-                ':f': new Date().toISOString(), ':enc': encargado.idUsuario
-            }
-        }
-    }];
+    const conReserva = s.reservaAplicada === true;
+    const hayPrestables = s.articulos.some(a => a.tipo === 'PRESTABLE');
+    const ahora = new Date().toISOString();
 
-    for (const item of s.articulos) {
-        const a = arts[item.idArticulo];
-        const c = item.cantidad;
-        const prestable = a.tipo === 'PRESTABLE';
+    
+    const items = [itemSolicitud(s, hayPrestables ? 'ENTREGADA' : 'CERRADA', {
+        fechaEntrega: ahora,
+        idEncargadoEntrega: encargado.idUsuario,
+        nombreEncargadoEntrega: encargado.nombre,
+        ...(hayPrestables ? {} : { fechaCierre: ahora })
+    })];
 
-        if (c > a.disponibles) {
-            throw new ErrorNegocio(
-                `Existencias insuficientes para ${a.nombre}. Disponibles: ${a.disponibles}`
-            );
-        }
-
-        
-        items.push({
-            Update: {
-                TableName: T_ARTICULOS,
-                Key: { idArticulo: a.idArticulo },
-                UpdateExpression: prestable
-                    ? 'SET disponibles = disponibles - :c, prestados = prestados + :c'
-                    : 'SET disponibles = disponibles - :c, existencias = existencias - :c',
-                // La condición evita inventario negativo aunque haya peticiones simultáneas
-                ConditionExpression: 'disponibles >= :c',
-                ExpressionAttributeValues: { ':c': c }
-            }
-        });
-
-        items.push(movimientos.itemTransaccion(movimientos.construirMovimiento({
-            idArticulo: a.idArticulo, idSolicitud, idSolicitante: s.idSolicitante,
-            idEncargado: encargado.idUsuario, tipoMovimiento: 'ENTREGA',
-            cantidad: c, saldoAntes: a.disponibles, saldoDespues: a.disponibles - c,
+    items.push(...itemsPorArticulo({
+        solicitud: s, arts, encargado, tipoMovimiento: 'ENTREGA',
+        calcular: (item, antes, a) => ({
+            despues: inventario.entregar(antes, item.cantidad, a.tipo, conReserva, a.nombre),
             detalle: { tipo: a.tipo }
-        })));
-    }
+        })
+    }));
 
     await ejecutar(items);
     return solicitudesService.obtenerSolicitudPorId(idSolicitud);
 }
 
 
-async function devolver(idSolicitud, encargado, datos) {
-    const s = await cargarSolicitud(idSolicitud);
-    exigirEstado(s, 'ENTREGADA');
 
-    const prestables = s.articulos.filter(a => a.tipo === 'PRESTABLE');
-    if (prestables.length === 0) {
-        throw new ErrorNegocio('La solicitud solo tiene consumibles; no requiere devolución');
-    }
+function validarReporte(prestables, datos) {
     if (!Array.isArray(datos.articulos)) {
         throw new ErrorNegocio('Debes indicar el estado de devolución de cada artículo prestable');
     }
-
-    const porId = Object.fromEntries(datos.articulos.map(a => [a.idArticulo, a]));
-    const arts = await cargarArticulos(s);
-
-    const items = [{
-        Update: {
-            TableName: T_SOLICITUDES,
-            Key: { idSolicitudes: idSolicitud },
-            UpdateExpression: 'SET #estado = :nuevo, fechaDevolucion = :f, idEncargadoDevolucion = :enc, devolucion = :det, observacionesDevolucion = :obs',
-            ConditionExpression: '#estado = :actual',
-            ExpressionAttributeNames: { '#estado': 'estado' },
-            ExpressionAttributeValues: {
-                ':nuevo': 'DEVUELTA', ':actual': 'ENTREGADA',
-                ':f': new Date().toISOString(), ':enc': encargado.idUsuario,
-                ':det': prestables.map(p => ({
-                    idArticulo: p.idArticulo,
-                    buenas: porId[p.idArticulo]?.buenas,
-                    danadas: porId[p.idArticulo]?.danadas,
-                    faltantes: porId[p.idArticulo]?.faltantes
-                })),
-                ':obs': datos.observaciones || ''
-            }
+    const permitidos = new Set(prestables.map(p => p.idArticulo));
+    const vistos = new Set();
+    for (const r of datos.articulos) {
+        if (!r || typeof r !== 'object' || typeof r.idArticulo !== 'string') {
+            throw new ErrorNegocio('Cada reporte de devolución debe incluir idArticulo');
         }
-    }];
+        if (!permitidos.has(r.idArticulo)) {
+            throw new ErrorNegocio(`El artículo ${r.idArticulo} no es un prestable de esta solicitud`);
+        }
+        if (vistos.has(r.idArticulo)) {
+            throw new ErrorNegocio(`El artículo ${r.idArticulo} aparece repetido en la devolución`);
+        }
+        vistos.add(r.idArticulo);
+    }
 
+    const porId = Object.fromEntries(datos.articulos.map(r => [r.idArticulo, r]));
     for (const item of prestables) {
         const d = porId[item.idArticulo];
         if (!d) throw new ErrorNegocio(`Falta el reporte de devolución de ${item.nombre}`);
-
         const { buenas, danadas, faltantes } = d;
-        const validos = [buenas, danadas, faltantes].every(n => Number.isInteger(n) && n >= 0);
-        if (!validos) {
+        if (![buenas, danadas, faltantes].every(n => Number.isInteger(n) && n >= 0)) {
             throw new ErrorNegocio(`Cantidades inválidas para ${item.nombre}`);
         }
         if (buenas + danadas + faltantes !== item.cantidad) {
@@ -233,34 +258,65 @@ async function devolver(idSolicitud, encargado, datos) {
                 `Para ${item.nombre} buenas + dañadas + faltantes debe ser ${item.cantidad}`
             );
         }
-
-        const a = arts[item.idArticulo];
-        const c = item.cantidad;
-
-        
-        items.push({
-            Update: {
-                TableName: T_ARTICULOS,
-                Key: { idArticulo: a.idArticulo },
-                UpdateExpression: 'SET disponibles = disponibles + :b, prestados = prestados - :c, existencias = existencias - :f, danados = if_not_exists(danados, :cero) + :d',
-                ConditionExpression: 'prestados >= :c',
-                ExpressionAttributeValues: {
-                    ':b': buenas, ':c': c, ':f': faltantes, ':d': danadas, ':cero': 0
-                }
-            }
-        });
-
-        items.push(movimientos.itemTransaccion(movimientos.construirMovimiento({
-            idArticulo: a.idArticulo, idSolicitud, idSolicitante: s.idSolicitante,
-            idEncargado: encargado.idUsuario, tipoMovimiento: 'DEVOLUCION',
-            cantidad: c, saldoAntes: a.disponibles, saldoDespues: a.disponibles + buenas,
-            motivo: datos.observaciones || '',
-            detalle: { buenas, danadas, faltantes }
-        })));
     }
+    return porId;
+}
+
+async function devolver(idSolicitud, encargado, datos) {
+    const observaciones = textoOpcional(datos.observaciones, 'observaciones');
+    const s = await cargarSolicitud(idSolicitud);
+    exigirEstado(s, 'ENTREGADA');
+
+    const prestables = s.articulos.filter(a => a.tipo === 'PRESTABLE');
+    if (prestables.length === 0) {
+        throw new ErrorNegocio('La solicitud solo tiene consumibles; no requiere devolución');
+    }
+    const porId = validarReporte(prestables, datos);
+    const arts = await cargarArticulos(s);
+
+    const items = [itemSolicitud(s, 'DEVUELTA', {
+        fechaDevolucion: new Date().toISOString(),
+        idEncargadoDevolucion: encargado.idUsuario,
+        nombreEncargadoDevolucion: encargado.nombre,
+        observacionesDevolucion: observaciones,
+        devolucion: prestables.map(p => ({
+            idArticulo: p.idArticulo,
+            clave: p.clave || null,
+            nombre: p.nombre,
+            cantidad: p.cantidad,
+            buenas: porId[p.idArticulo].buenas,
+            danadas: porId[p.idArticulo].danadas,
+            faltantes: porId[p.idArticulo].faltantes
+        }))
+    })];
+
+    items.push(...itemsPorArticulo({
+        solicitud: s, arts, encargado, tipoMovimiento: 'DEVOLUCION', motivo: observaciones,
+        solo: item => item.tipo === 'PRESTABLE',
+        calcular: (item, antes, a) => {
+            const { buenas, danadas, faltantes } = porId[item.idArticulo];
+            return {
+                despues: inventario.devolver(antes, item.cantidad, { buenas, danadas, faltantes }, a.nombre),
+                detalle: { buenas, danadas, faltantes }
+            };
+        }
+    }));
 
     await ejecutar(items);
     return solicitudesService.obtenerSolicitudPorId(idSolicitud);
 }
 
-module.exports = { aprobar, rechazar, entregar, devolver };
+
+async function cerrar(idSolicitud, encargado) {
+    const s = await cargarSolicitud(idSolicitud);
+    exigirEstado(s, 'DEVUELTA');
+
+    await ejecutar([itemSolicitud(s, 'CERRADA', {
+        fechaCierre: new Date().toISOString(),
+        idEncargadoCierre: encargado.idUsuario,
+        nombreEncargadoCierre: encargado.nombre
+    })]);
+    return solicitudesService.obtenerSolicitudPorId(idSolicitud);
+}
+
+module.exports = { aprobar, rechazar, cancelar, entregar, devolver, cerrar };

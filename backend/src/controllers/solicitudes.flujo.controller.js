@@ -21,4 +21,14 @@ const devolver = asyncHandler(async (req, res) => {
     res.json({ mensaje: 'Devolución registrada', solicitud });
 });
 
-module.exports = { aprobar, rechazar, entregar, devolver };
+const cancelar = asyncHandler(async (req, res) => {
+    const solicitud = await flujo.cancelar(req.params.id, req.usuario, req.body.motivo);
+    res.json({ mensaje: 'Solicitud cancelada', solicitud });
+});
+
+const cerrar = asyncHandler(async (req, res) => {
+    const solicitud = await flujo.cerrar(req.params.id, req.usuario);
+    res.json({ mensaje: 'Solicitud cerrada', solicitud });
+});
+
+module.exports = { aprobar, rechazar, cancelar, entregar, devolver, cerrar };

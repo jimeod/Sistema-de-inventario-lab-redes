@@ -1,25 +1,41 @@
 const jwt = require('jsonwebtoken');
-const { ErrorNegocio } = require('../utils/errors');
+const { ErrorNegocio, asyncHandler } = require('../utils/errors');
+const usuariosService = require('../services/usuarios.service');
 
-function autenticar(req, res, next) {
+
+const autenticar = asyncHandler(async (req, res, next) => {
     const header = req.headers.authorization || '';
     const [tipo, token] = header.split(' ');
- 
+
     if (tipo !== 'Bearer' || !token) {
-        return next(new ErrorNegocio('Debes iniciar sesión', 401));
+        throw new ErrorNegocio('Debes iniciar sesión', 401);
     }
+
+    let payload;
     try {
-        const payload = jwt.verify(token, process.env.JWT_SECRET);
-        req.usuario = {
-            idUsuario: payload.idUsuario,
-            nombre: payload.nombre,
-            rol: payload.rol
-        };
-        next();
+        payload = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     } catch {
-        next(new ErrorNegocio('Sesión inválida o expirada', 401));
+        throw new ErrorNegocio('Sesión inválida o expirada', 401);
     }
-}
+
+    const usuario = await usuariosService.obtenerUsuarioPorId(payload.idUsuario);
+    if (!usuario || !usuario.activo) {
+        throw new ErrorNegocio('Sesión inválida o expirada', 401);
+    }
+
+    // Tokens emitidos antes de un cambio de contraseña dejan de valer
+    if ((payload.pv || null) !== (usuario.passwordActualizadaEn || null)) {
+        throw new ErrorNegocio('Sesión inválida o expirada', 401);
+    }
+
+    req.usuario = {
+        idUsuario: usuario.idUsuario,
+        nombre: usuario.nombre,
+        correo: usuario.correo,
+        rol: usuario.rol
+    };
+    next();
+});
 
 function permitirRoles(...roles) {
     return (req, res, next) => {
@@ -29,7 +45,6 @@ function permitirRoles(...roles) {
         next();
     };
 }
- 
 
 function propioOEncargado(paramName = 'idUsuario') {
     return (req, res, next) => {
@@ -39,6 +54,5 @@ function propioOEncargado(paramName = 'idUsuario') {
         next(new ErrorNegocio('No tienes permisos para consultar esta información', 403));
     };
 }
- 
+
 module.exports = { autenticar, permitirRoles, propioOEncargado };
- 
