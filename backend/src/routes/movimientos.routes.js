@@ -6,5 +6,6 @@ router.use(autenticar);
 
 router.get('/articulo/:id', permitirRoles('ENCARGADO'), controller.porArticulo);
 router.get('/solicitante/:id', propioOEncargado('id'), controller.porSolicitante);
+router.get('/solicitud/:id', controller.porSolicitud);
 
 module.exports = router;

@@ -7,7 +7,8 @@ const { CAMPOS } = require('../utils/inventario');
 const TABLE = process.env.DYNAMODB_TABLE_MOVIMIENTOS || 'Movimientos';
 
 const TIPOS = [
-    'ALTA', 'SOLICITUD', 'APROBACION', 'RECHAZO', 'CANCELACION', 'ENTREGA', 'DEVOLUCION'
+    'ALTA', 'SOLICITUD', 'APROBACION', 'RECHAZO', 'CANCELACION', 'ENTREGA', 'DEVOLUCION',
+    'REABASTECIMIENTO', 'BAJA'
 ];
 
 const SOLO_NUEVOS = 'attribute_not_exists(idArticulo)';

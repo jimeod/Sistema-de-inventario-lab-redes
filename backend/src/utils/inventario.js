@@ -81,4 +81,26 @@ function devolver(c, n, { buenas, danadas, faltantes }, nombre = 'el artículo')
     return r;
 }
 
-module.exports = { CAMPOS, contadores, reservar, liberar, entregar, devolver };
+
+
+function reabastecer(c, n) {
+    exigirCantidad(n);
+    const r = { ...c };
+    r.existencias += n;
+    r.disponibles += n;
+    r.libres = r.disponibles - r.reservados;
+    return r;
+}
+
+
+function darDeBaja(c, n, nombre = 'el artículo') {
+    exigirCantidad(n);
+    if (n > c.danados) {
+        throw new ErrorNegocio(
+            `Solo hay ${c.danados} unidades dañadas de ${nombre} para dar de baja`, 409
+        );
+    }
+    return { ...c, danados: c.danados - n, existencias: c.existencias - n };
+}
+
+module.exports = { CAMPOS, contadores, reservar, liberar, entregar, devolver, reabastecer, darDeBaja };

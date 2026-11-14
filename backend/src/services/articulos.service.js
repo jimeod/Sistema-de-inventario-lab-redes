@@ -9,7 +9,7 @@ const db = require('../config/aws');
 const { ErrorNegocio } = require('../utils/errors');
 const { escanearTodo, motivosCancelacion } = require('../utils/dynamo');
 const { exigirTexto } = require('../utils/validaciones');
-const { CAMPOS, contadores } = require('../utils/inventario');
+const { CAMPOS, contadores, reabastecer, darDeBaja } = require('../utils/inventario');
 const movimientosService = require('./movimientos.service');
 
 const TABLE = process.env.DYNAMODB_TABLE_ARTICULOS;
@@ -358,7 +358,51 @@ async function desactivarArticulo(idArticulo) {
     }
 }
 
+
+async function ajustarExistencias(idArticulo, tipoMovimiento, datos, actor) {
+    const cantidad = datos.cantidad;
+    if (!Number.isInteger(cantidad) || cantidad <= 0) {
+        throw new ErrorNegocio('La cantidad debe ser un entero positivo');
+    }
+    const motivo = exigirTexto(datos.motivo, 'motivo', { min: 3, max: 500 });
+
+    const articulo = await migrarSiHaceFalta(idArticulo);
+    if (!articulo) throw new ErrorNegocio('Artículo no encontrado', 404);
+
+    const antes = contadores(articulo);
+    let despues;
+    if (tipoMovimiento === 'REABASTECIMIENTO') {
+        if (!articulo.activo) {
+            throw new ErrorNegocio('El artículo está inactivo; no se puede reabastecer', 409);
+        }
+        despues = reabastecer(antes, cantidad);
+    } else {
+        despues = darDeBaja(antes, cantidad, articulo.nombre);
+    }
+
+    const movimiento = movimientosService.construirMovimiento({
+        articulo, encargado: actor, tipoMovimiento, cantidad, motivo, antes, despues
+    });
+
+    await db.send(new TransactWriteCommand({
+        TransactItems: [
+            itemActualizarContadores({ ...antes, idArticulo }, despues),
+            movimientosService.itemTransaccion(movimiento)
+        ]
+    }));
+
+    return obtenerArticuloPorId(idArticulo);
+}
+
+const reabastecerArticulo = (idArticulo, datos, actor) =>
+    ajustarExistencias(idArticulo, 'REABASTECIMIENTO', datos, actor);
+
+const darDeBajaArticulo = (idArticulo, datos, actor) =>
+    ajustarExistencias(idArticulo, 'BAJA', datos, actor);
+
 module.exports = {
+    reabastecerArticulo,
+    darDeBajaArticulo,
     TIPOS,
     CONDICIONES,
     normalizarClave,
