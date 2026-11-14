@@ -3,19 +3,29 @@ const s3Service = require('../services/s3.service');
 const logger = require('../utils/logger');
 const { asyncHandler, ErrorNegocio } = require('../utils/errors');
 
+
+async function conFotoUrl(articulo) {
+    if (!articulo.fotoKey) return articulo;
+    try {
+        return { ...articulo, fotoUrl: await s3Service.obtenerUrlArchivo(articulo.fotoKey) };
+    } catch (err) {
+        logger.aviso('No se pudo firmar la URL de la foto', {
+            idArticulo: articulo.idArticulo, detalle: err.message
+        });
+        return { ...articulo, fotoUrl: null };
+    }
+}
+
 const listar = asyncHandler(async (req, res) => {
     const articulos = await articulosService.obtenerArticulos();
-    res.json(articulos);
+    res.json(await Promise.all(articulos.map(conFotoUrl)));
 });
 
 const consultar = asyncHandler(async (req, res) => {
     const articulo = await articulosService.obtenerArticuloPorId(req.params.id);
     if (!articulo) throw new ErrorNegocio('Artículo no encontrado', 404);
 
-    if (articulo.fotoKey) {
-        articulo.fotoUrl = await s3Service.obtenerUrlArchivo(articulo.fotoKey);
-    }
-    res.status(200).json(articulo);
+    res.status(200).json(await conFotoUrl(articulo));
 });
 
 const registrar = asyncHandler(async (req, res) => {
@@ -68,4 +78,16 @@ const subirFoto = asyncHandler(async (req, res) => {
     });
 });
 
-module.exports = { listar, consultar, registrar, editar, desactivar, subirFoto };
+const reabastecer = asyncHandler(async (req, res) => {
+    const articulo = await articulosService.reabastecerArticulo(req.params.id, req.body, req.usuario);
+    res.json({ mensaje: 'Existencias actualizadas correctamente', articulo });
+});
+
+const darDeBaja = asyncHandler(async (req, res) => {
+    const articulo = await articulosService.darDeBajaArticulo(req.params.id, req.body, req.usuario);
+    res.json({ mensaje: 'Unidades dadas de baja correctamente', articulo });
+});
+
+module.exports = {
+    listar, consultar, registrar, editar, desactivar, subirFoto, reabastecer, darDeBaja
+};
