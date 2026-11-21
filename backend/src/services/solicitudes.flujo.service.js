@@ -28,11 +28,16 @@ function exigirEstado(solicitud, ...esperados) {
 }
 
 
-async function cargarArticulos(solicitud) {
+// Con tolerarEliminados (rechazar/cancelar) los artículos borrados del inventario se omiten:
+// no hay contadores que ajustar y la solicitud debe poder cerrarse igual.
+async function cargarArticulos(solicitud, { tolerarEliminados = false } = {}) {
     const mapa = {};
     for (const item of solicitud.articulos) {
         const art = await articulosService.migrarSiHaceFalta(item.idArticulo);
-        if (!art) throw new ErrorNegocio(`El artículo ${item.nombre} ya no existe`, 404);
+        if (!art) {
+            if (tolerarEliminados) continue;
+            throw new ErrorNegocio(`El artículo ${item.nombre} ya no existe`, 404);
+        }
         mapa[item.idArticulo] = art;
     }
     return mapa;
@@ -77,6 +82,7 @@ function itemsPorArticulo({
     for (const item of solicitud.articulos) {
         if (solo && !solo(item)) continue;
         const a = arts[item.idArticulo];
+        if (!a) continue; // artículo eliminado (solo llega aquí en rechazar/cancelar)
         const antes = inventario.contadores(a);
         const { despues, detalle } = calcular(item, antes, a);
 
@@ -141,7 +147,7 @@ async function rechazar(idSolicitud, encargado, motivoCrudo) {
     const motivo = exigirTexto(motivoCrudo, 'motivo del rechazo', { max: 500 });
     const s = await cargarSolicitud(idSolicitud);
     exigirEstado(s, 'PENDIENTE');
-    const arts = await cargarArticulos(s);
+    const arts = await cargarArticulos(s, { tolerarEliminados: true });
 
     const items = [itemSolicitud(s, 'RECHAZADA', {
         ...datosEncargado(encargado),
@@ -169,7 +175,7 @@ async function cancelar(idSolicitud, actor, motivoCrudo) {
     }
     exigirEstado(s, 'PENDIENTE', 'APROBADA');
 
-    const arts = await cargarArticulos(s);
+    const arts = await cargarArticulos(s, { tolerarEliminados: true });
     
     const liberaReserva = s.estado === 'APROBADA' && s.reservaAplicada === true;
 
@@ -215,8 +221,8 @@ async function entregar(idSolicitud, encargado) {
     items.push(...itemsPorArticulo({
         solicitud: s, arts, encargado, tipoMovimiento: 'ENTREGA',
         calcular: (item, antes, a) => ({
-            despues: inventario.entregar(antes, item.cantidad, a.tipo, conReserva, a.nombre),
-            detalle: { tipo: a.tipo }
+            despues: inventario.entregar(antes, item.cantidad, item.tipo, conReserva, a.nombre),
+            detalle: { tipo: item.tipo }
         })
     }));
 

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crear cuenta - Inventario Lab Redes</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
+
+    <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2"></div>
+
+    <main class="flex-grow flex items-center justify-center p-4 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 border border-slate-100">
+            <div class="flex flex-col items-center mb-6">
+                <div class="w-14 h-14 bg-indigo-600 text-white rounded-xl flex items-center justify-center shadow-lg mb-3">
+                    <i data-lucide="user-plus" class="w-8 h-8"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-slate-900">Crear cuenta</h1>
+                <p class="text-sm text-slate-500 text-center">Regístrate para solicitar equipo y material del laboratorio.</p>
+            </div>
+
+            <form id="form-registro" class="space-y-4">
+                <div>
+                    <label for="reg-nombre" class="block text-sm font-medium text-slate-700 mb-1">Nombre completo</label>
+                    <input type="text" id="reg-nombre" required minlength="2" maxlength="100" autocomplete="name"
+                        class="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition">
+                </div>
+                <div>
+                    <label for="reg-correo" class="block text-sm font-medium text-slate-700 mb-1">Correo Institucional</label>
+                    <input type="email" id="reg-correo" required autocomplete="email" placeholder="usuario@uaq.mx"
+                        class="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition">
+                </div>
+                <div>
+                    <label for="reg-password" class="block text-sm font-medium text-slate-700 mb-1">Contraseña (mín. 8 caracteres)</label>
+                    <input type="password" id="reg-password" required minlength="8" autocomplete="new-password"
+                        class="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition">
+                </div>
+                <div>
+                    <label for="reg-confirmar" class="block text-sm font-medium text-slate-700 mb-1">Confirmar contraseña</label>
+                    <input type="password" id="reg-confirmar" required minlength="8" autocomplete="new-password"
+                        class="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition">
+                </div>
+                <div class="border-t border-slate-100 pt-4 space-y-3">
+                    <label class="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                        <input type="checkbox" id="reg-es-encargado" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+                        Soy encargado del laboratorio
+                    </label>
+                    <div id="reg-codigo-contenedor" class="hidden">
+                        <label for="reg-codigo" class="block text-sm font-medium text-slate-700 mb-1">Código de encargado</label>
+                        <input type="password" id="reg-codigo" autocomplete="off"
+                            class="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition">
+                        <p class="text-xs text-slate-500 mt-1">Te lo da el responsable del laboratorio.</p>
+                    </div>
+                    <p class="text-xs text-slate-500">Sin código, tu cuenta es de solicitante (alumno o docente).</p>
+                </div>
+                <button type="submit" id="btn-registro-submit"
+                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-lg shadow transition flex items-center justify-center gap-2 cursor-pointer">
+                    <span>Crear cuenta</span>
+                    <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                </button>
+            </form>
+
+            <p class="text-sm text-slate-500 text-center mt-6">
+                ¿Ya tienes cuenta?
+                <a href="login.html" class="font-semibold text-indigo-600 hover:text-indigo-800 hover:underline">Iniciar sesión</a>
+            </p>
+        </div>
+    </main>
+
+    <script type="module" src="js/auth.js"></script>
+</body>
+</html>

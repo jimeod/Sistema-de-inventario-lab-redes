@@ -38,9 +38,18 @@ const editar = asyncHandler(async (req, res) => {
     res.json({ mensaje: 'Artículo actualizado correctamente', articulo });
 });
 
-const desactivar = asyncHandler(async (req, res) => {
-    const articulo = await articulosService.desactivarArticulo(req.params.id);
-    res.json({ mensaje: 'Artículo desactivado correctamente', articulo });
+// Borra el artículo de DynamoDB y su foto del bucket de S3.
+const eliminar = asyncHandler(async (req, res) => {
+    const { articulo, fotoKey } = await articulosService.eliminarArticulo(req.params.id);
+
+    // El registro ya no existe; si S3 falla solo se avisa en el log (queda un archivo huérfano).
+    if (fotoKey) {
+        await s3Service.eliminarArchivo(fotoKey).catch(e =>
+            logger.aviso('No se pudo eliminar la foto del artículo eliminado', {
+                idArticulo: articulo.idArticulo, fotoKey, detalle: e.message
+            }));
+    }
+    res.json({ mensaje: 'Artículo eliminado correctamente', articulo });
 });
 
 
@@ -89,5 +98,5 @@ const darDeBaja = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-    listar, consultar, registrar, editar, desactivar, subirFoto, reabastecer, darDeBaja
+    listar, consultar, registrar, editar, eliminar, subirFoto, reabastecer, darDeBaja
 };

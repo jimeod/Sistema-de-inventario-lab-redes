@@ -55,6 +55,7 @@ function normalizarArticulo(item) {
 async function obtenerArticulos() {
     const items = await escanearTodo({
         TableName: TABLE,
+        ConsistentRead: true,
         FilterExpression: 'activo = :activo AND attribute_not_exists(tipoRegistro)',
         ExpressionAttributeValues: {
             ':activo': true
@@ -69,7 +70,8 @@ async function obtenerCrudo(idArticulo) {
     }
     const resultado = await db.send(new GetCommand({
         TableName: TABLE,
-        Key: { idArticulo }
+        Key: { idArticulo },
+        ConsistentRead: true
     }));
     return resultado.Item && !resultado.Item.tipoRegistro ? resultado.Item : null;
 }
@@ -228,7 +230,26 @@ async function actualizarArticulo(idArticulo, datos) {
         cambios.condicion = datos.condicion;
     }
 
-    
+    // Cambio PRESTABLE <-> CONSUMIBLE: solo si no hay unidades afuera ni reservadas,
+    // porque esos contadores se interpretan distinto según el tipo.
+    let cambiaTipo = false;
+    if (datos.tipo !== undefined) {
+        if (!TIPOS.includes(datos.tipo)) {
+            throw new ErrorNegocio('El tipo debe ser PRESTABLE o CONSUMIBLE');
+        }
+        if (datos.tipo !== existente.tipo) {
+            const c = contadores(existente);
+            if (c.prestados > 0 || c.reservados > 0) {
+                throw new ErrorNegocio(
+                    'No se puede cambiar el tipo: tiene unidades prestadas o reservadas por solicitudes abiertas',
+                    409
+                );
+            }
+            cambios.tipo = datos.tipo;
+            cambiaTipo = true;
+        }
+    }
+
     let claveNueva = null;
     if (datos.clave !== undefined) {
         claveNueva = normalizarClave(datos.clave);
@@ -250,13 +271,28 @@ async function actualizarArticulo(idArticulo, datos) {
         valores[`:valor${i}`] = cambios[campo];
     });
 
+    // Si cambia el tipo, se vuelve a exigir en la propia escritura que no haya préstamos
+    // ni reservas (otra solicitud pudo aprobarse entre la lectura y el guardado).
+    let condicion = SOLO_ARTICULOS;
+    if (cambiaTipo) {
+        valores[':cero'] = 0;
+        condicion += ' AND (attribute_not_exists(prestados) OR prestados = :cero)' +
+            ' AND (attribute_not_exists(reservados) OR reservados = :cero)';
+    }
+    const errorCondicion = () => cambiaTipo
+        ? new ErrorNegocio(
+            'No se pudo cambiar el tipo: el artículo cambió (¿hay préstamos o reservas?). Verifica e intenta de nuevo.',
+            409
+        )
+        : new ErrorNegocio('Artículo no encontrado', 404);
+
     const actualizar = {
         TableName: TABLE,
         Key: { idArticulo },
         UpdateExpression: `SET ${campos.map((_, i) => `#campo${i} = :valor${i}`).join(', ')}`,
         ExpressionAttributeNames: nombres,
         ExpressionAttributeValues: valores,
-        ConditionExpression: SOLO_ARTICULOS
+        ConditionExpression: condicion
     };
 
     if (!cambiaClave) {
@@ -264,9 +300,7 @@ async function actualizarArticulo(idArticulo, datos) {
             const r = await db.send(new UpdateCommand({ ...actualizar, ReturnValues: 'ALL_NEW' }));
             return normalizarArticulo(r.Attributes);
         } catch (err) {
-            if (err.name === 'ConditionalCheckFailedException') {
-                throw new ErrorNegocio('Artículo no encontrado', 404);
-            }
+            if (err.name === 'ConditionalCheckFailedException') throw errorCondicion();
             throw err;
         }
     }
@@ -296,9 +330,7 @@ async function actualizarArticulo(idArticulo, datos) {
             if (motivos[0] === 'ConditionalCheckFailed') {
                 throw new ErrorNegocio(`Ya existe un artículo con la clave ${claveNueva}`, 409);
             }
-            if (motivos[1] === 'ConditionalCheckFailed') {
-                throw new ErrorNegocio('Artículo no encontrado', 404);
-            }
+            if (motivos[1] === 'ConditionalCheckFailed') throw errorCondicion();
         }
         throw err;
     }
@@ -327,35 +359,48 @@ async function actualizarFotoArticulo(idArticulo, fotoKey) {
     }
 }
 
-async function desactivarArticulo(idArticulo) {
+// Elimina el artículo de verdad: borra su registro (y el índice de su clave) de DynamoDB.
+// La foto en S3 la borra el controlador con la fotoKey que se devuelve aquí.
+// El historial de movimientos se conserva como bitácora.
+async function eliminarArticulo(idArticulo) {
     const a = await migrarSiHaceFalta(idArticulo);
     if (!a) throw new ErrorNegocio('Artículo no encontrado', 404);
     if (a.prestados > 0 || a.reservados > 0) {
         throw new ErrorNegocio(
-            'No se puede desactivar: tiene unidades prestadas o reservadas por solicitudes abiertas',
+            'No se puede eliminar: tiene unidades prestadas o reservadas por solicitudes abiertas',
             409
         );
     }
 
-    try {
-        const resultado = await db.send(new UpdateCommand({
+    const items = [{
+        Delete: {
             TableName: TABLE,
             Key: { idArticulo },
-            UpdateExpression: 'SET activo = :activo',
-            
+            // Se re-verifica en la propia escritura por si una solicitud se aprobó entre tanto.
             ConditionExpression: `${SOLO_ARTICULOS} AND prestados = :cero AND reservados = :cero`,
-            ExpressionAttributeValues: { ':activo': false, ':cero': 0 },
-            ReturnValues: 'ALL_NEW'
-        }));
-        return normalizarArticulo(resultado.Attributes);
+            ExpressionAttributeValues: { ':cero': 0 }
+        }
+    }];
+    if (a.clave) {
+        items.push({
+            Delete: {
+                TableName: TABLE,
+                Key: { idArticulo: `${PREFIJO_INDICE}${a.clave}` }
+            }
+        });
+    }
+
+    try {
+        await db.send(new TransactWriteCommand({ TransactItems: items }));
     } catch (err) {
-        if (err.name === 'ConditionalCheckFailedException') {
+        if (err.name === 'TransactionCanceledException') {
             throw new ErrorNegocio(
-                'No se pudo desactivar: el artículo cambió. Verifica e intenta de nuevo.', 409
+                'No se pudo eliminar: el artículo cambió. Verifica e intenta de nuevo.', 409
             );
         }
         throw err;
     }
+    return { articulo: a, fotoKey: a.fotoKey || null };
 }
 
 
@@ -415,5 +460,5 @@ module.exports = {
     crearArticulo,
     actualizarArticulo,
     actualizarFotoArticulo,
-    desactivarArticulo
+    eliminarArticulo
 };

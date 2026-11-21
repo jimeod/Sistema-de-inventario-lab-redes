@@ -10,7 +10,9 @@ router.post('/', permitirRoles('ENCARGADO'), controller.registrar);
 
 router.get('/:id', controller.consultar);
 router.put('/:id', permitirRoles('ENCARGADO'), controller.editar);
-router.patch('/:id/desactivar', permitirRoles('ENCARGADO'), controller.desactivar);
+router.delete('/:id', permitirRoles('ENCARGADO'), controller.eliminar);
+// Alias por compatibilidad con el front anterior (antes solo "desactivaba").
+router.patch('/:id/desactivar', permitirRoles('ENCARGADO'), controller.eliminar);
 router.post('/:id/reabastecer', permitirRoles('ENCARGADO'), controller.reabastecer);
 router.post('/:id/baja', permitirRoles('ENCARGADO'), controller.darDeBaja);
 router.post(

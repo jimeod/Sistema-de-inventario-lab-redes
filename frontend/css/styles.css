@@ -1,0 +1,61 @@
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.toast-enter {
+    animation: fadeIn 0.25s ease-out forwards;
+}
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 9999px;
+}
+
+/* ---------- Vale imprimible ---------- */
+#vale-impresion {
+    display: none;
+}
+
+@media print {
+    @page { margin: 15mm; }
+
+    /* Al imprimir solo se ve el vale. */
+    body > *:not(#vale-impresion) { display: none !important; }
+    body { background: #fff !important; }
+
+    #vale-impresion {
+        display: block !important;
+        color: #000;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-size: 11pt;
+        line-height: 1.4;
+    }
+    .vale-encabezado {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        border-bottom: 2px solid #000;
+        padding-bottom: 8px;
+        margin-bottom: 14px;
+    }
+    .vale-titulo { font-size: 18pt; font-weight: 700; margin: 0; }
+    .vale-subtitulo { font-size: 10pt; color: #444; margin: 2px 0 0; }
+    .vale-folio { font-size: 16pt; font-weight: 700; text-align: right; }
+    .vale-datos { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 20px; margin-bottom: 14px; }
+    .vale-datos p, .vale-nota { margin: 0; }
+    .vale-nota { margin-bottom: 6px; }
+    .vale-seccion { font-size: 11pt; font-weight: 700; margin: 14px 0 4px; }
+    .vale-tabla { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+    .vale-tabla th, .vale-tabla td { border: 1px solid #000; padding: 4px 6px; text-align: left; font-size: 10.5pt; }
+    .vale-tabla th { background: #eee; }
+    .vale-seguimiento { margin: 0; padding-left: 18px; font-size: 10.5pt; }
+    .vale-firmas { display: flex; gap: 28px; margin-top: 56px; }
+    .vale-firma { flex: 1; border-top: 1px solid #000; padding-top: 4px; text-align: center; font-size: 10pt; }
+    .vale-pie { margin-top: 28px; font-size: 9pt; color: #444; }
+    .vale-tabla tr, .vale-firmas { break-inside: avoid; }
+}

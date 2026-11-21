@@ -9,6 +9,22 @@ const login = asyncHandler(async (req, res) => {
     res.json(await authService.login(correo, password));
 });
 
+const registro = asyncHandler(async (req, res) => {
+    // Cualquier "rol" enviado por el cliente se ignora: el rol lo decide el servidor.
+    const { nombre, correo, password } = req.body;
+    const codigoEncargado = typeof req.body.codigoEncargado === 'string'
+        ? req.body.codigoEncargado.trim()
+        : undefined;
+
+    if (typeof nombre !== 'string' || typeof correo !== 'string' || typeof password !== 'string' ||
+        !nombre.trim() || !correo.trim() || !password) {
+        throw new ErrorNegocio('Nombre, correo y contraseña son obligatorios');
+    }
+
+    const resultado = await authService.registrar({ nombre, correo, password, codigoEncargado });
+    res.status(201).json({ mensaje: 'Cuenta creada correctamente', ...resultado });
+});
+
 const perfil = (req, res) => res.json(req.usuario);
 
 const cambiarPassword = asyncHandler(async (req, res) => {
@@ -19,4 +35,4 @@ const cambiarPassword = asyncHandler(async (req, res) => {
     res.json({ mensaje: 'Contraseña actualizada correctamente', ...resultado });
 });
 
-module.exports = { login, perfil, cambiarPassword };
+module.exports = { login, registro, perfil, cambiarPassword };
